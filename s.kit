@@ -1,0 +1,7 @@
+@if(ENV && !DEBUG)
+printf("ENV true, DEBUG false\n");
+@elif(ENV || DEBUG)
+printf("Either ENV or DEBUG is true\n");
+@else
+printf("Optional else test\n");
+@endif
