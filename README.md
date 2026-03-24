@@ -20,7 +20,7 @@ Designed for:
 - `@define` (int + string)
 - `@include`
 - `@macro`
-- `--trace` debug mode (future)
+- `--trace` debug mode
 - file + line error reporting (future)
 
 ---

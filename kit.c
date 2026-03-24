@@ -36,6 +36,13 @@ int macro_count = 0;
 char *inc_paths[MAX_INC_PATHS];
 int inc_path_count = 0;
 int minify = 0;
+int trace = 0;
+
+/* --- Error Reporting --- */
+void kit_error(const char *file, int line, const char *msg) {
+    fprintf(stderr, "%s:%d: error: %s\n", file, line, msg);
+    exit(1);
+}
 
 /* --- Utilities --- */
 void trim(char *s) {
@@ -177,18 +184,16 @@ void substitute_and_print(const char *line) {
                 } else {
                     printf("@%s", name);
                 }
-            } else {
-                putchar('@');
-            }
+            } else { putchar('@'); }
         } else putchar(*q++);
     }
     putchar('\n');
 }
 
-void process_line(char *line, FILE *in);
+void process_line(char *line, FILE *in, const char *fname, int *lnum);
 
 /* --- Directive Handlers --- */
-void handle_include(char *line) {
+void handle_include(char *line, const char *curr_file, int curr_line) {
     char inc_file[256];
     if (sscanf(line, "@include \"%255[^\"]\"", inc_file) != 1) return;
     
@@ -200,19 +205,22 @@ void handle_include(char *line) {
     }
     
     if (f) {
-        char buf[4096];
-        while (fgets(buf, sizeof(buf), f)) process_line(buf, f);
+        char buf[4096]; int l = 0;
+        while (fgets(buf, sizeof(buf), f)) {
+            l++;
+            process_line(buf, f, inc_file, &l);
+        }
         fclose(f);
     } else {
-        fprintf(stderr, "Error: Could not find include file '%s'\n", inc_file);
+        kit_error(curr_file, curr_line, "Could not find include file");
     }
 }
 
-void handle_macro_def(char *line, FILE *in) {
-    if (macro_count >= MAX_MACROS) return;
+void handle_macro_def(char *line, FILE *in, const char *fname, int *lnum) {
+    if (macro_count >= MAX_MACROS) kit_error(fname, *lnum, "Too many macros");
     Macro *m = &macros[macro_count++];
     char *open = strchr(line, '('), *close = strchr(line, ')');
-    if (!open || !close) return;
+    if (!open || !close) kit_error(fname, *lnum, "Malformed macro definition");
 
     int name_len = open - (line + 7);
     strncpy(m->name, ltrim(line + 7), name_len);
@@ -227,12 +235,13 @@ void handle_macro_def(char *line, FILE *in) {
 
     char buf[4096];
     while (fgets(buf, sizeof(buf), in)) {
+        (*lnum)++;
         if (strstr(buf, "@endmacro")) break;
         m->body[m->line_count++] = strdup(buf);
     }
 }
 
-void handle_macro_call(Macro *m, char *line) {
+void handle_macro_call(Macro *m, char *line, const char *fname, int lnum) {
     char *open = strchr(line, '('), *close = strrchr(line, ')');
     if (!open || !close) return;
     char args[8][128]; int arg_count = 0;
@@ -252,6 +261,7 @@ void handle_macro_call(Macro *m, char *line) {
         tok = strtok(NULL, ",");
     }
 
+    char m_name[128]; snprintf(m_name, 128, "macro:%s", m->name);
     for (int i = 0; i < m->line_count; i++) {
         char expanded[4096]; strcpy(expanded, m->body[i]);
         for (int a = 0; a < arg_count; a++) {
@@ -264,26 +274,25 @@ void handle_macro_call(Macro *m, char *line) {
                 strcpy(expanded, tmp);
             }
         }
-        process_line(expanded, NULL);
+        int ml = i + 1;
+        process_line(expanded, NULL, m_name, &ml);
     }
 }
 
-void handle_for(char *line, FILE *in) {
-    char var[64];
-    char *eq = strchr(line, '=');
-    char *dot = strstr(line, "..");
-    if (!eq || !dot) return;
+void handle_for(char *line, FILE *in, const char *fname, int *lnum) {
+    char var[64], line_copy[4096]; strcpy(line_copy, line);
+    char *eq = strchr(line_copy, '='), *dot = strstr(line_copy, "..");
+    if (!eq || !dot) kit_error(fname, *lnum, "Malformed @for loop");
     
-    *eq = 0;
-    *dot = 0;
-
-    char *v_start = ltrim(line + 4);
+    *eq = 0; *dot = 0;
+    char *v_start = ltrim(line_copy + 4);
     strncpy(var, v_start, 63); var[63] = 0; trim(var);
     int start = get_symbol_int(ltrim(eq + 1)), end = get_symbol_int(ltrim(dot + 2));
 
     char *body[MAX_BLOCK_LINES]; int count = 0, depth = 1;
     char buf[4096];
     while (fgets(buf, sizeof(buf), in)) {
+        (*lnum)++;
         if (strstr(buf, "@for")) depth++;
         if (strstr(buf, "@endfor") && --depth == 0) break;
         body[count++] = strdup(buf);
@@ -293,56 +302,62 @@ void handle_for(char *line, FILE *in) {
             set_symbol_int(var, i, 0);
             for (int j = 0; j < count; j++) {
                 char tmp[4096]; strcpy(tmp, body[j]);
-                process_line(tmp, in);
+                int fake_l = *lnum; // Inside unroll, line numbers are approximate
+                process_line(tmp, in, fname, &fake_l);
             }
         }
     }
     for (int j = 0; j < count; j++) free(body[j]);
 }
 
-void process_line(char *line, FILE *in) {
-    char original[4096];
-    strcpy(original, line);
+void process_line(char *line, FILE *in, const char *fname, int *lnum) {
     char *e = line + strlen(line) - 1;
     while(e >= line && (*e == '\n' || *e == '\r')) *e-- = '\0';
     char *s = ltrim(line);
+
+    if (trace && *s == '@') fprintf(stderr, "trace: %s:%d: %s\n", fname, *lnum, s);
 
     if (!*s) { if (current_emit() && !minify) putchar('\n'); return; }
 
     if (!strncmp(s, "@define", 7)) {
         char n[64], str_v[256];
-        if (sscanf(s, "@define %63s \"%255[^\"]\"", n, str_v) == 2) {
-            set_symbol_str(n, str_v, 0);
-        } else {
+        if (sscanf(s, "@define %63s \"%255[^\"]\"", n, str_v) == 2) set_symbol_str(n, str_v, 0);
+        else {
             char v[64];
-            if (sscanf(s, "@define %63s %63s", n, v) == 2) {
-                set_symbol_int(n, get_symbol_int(v), 0);
-            }
+            if (sscanf(s, "@define %63s %63s", n, v) == 2) set_symbol_int(n, get_symbol_int(v), 0);
         }
         return;
     }
-    if (!strncmp(s, "@include", 8)) { handle_include(s); return; }
+    if (!strncmp(s, "@include", 8)) { handle_include(s, fname, *lnum); return; }
     if (!strncmp(s, "@if", 3)) {
         char *o = strchr(s, '('), *c = strrchr(s, ')');
-        if (o && c) { *c = 0; expr_p = o + 1; int cond = parse_expr(); int em = current_emit();
-            stack[sp++] = (Frame){em, cond, em && cond}; }
+        if (!o || !c) kit_error(fname, *lnum, "Malformed @if condition");
+        *c = 0; expr_p = o + 1; int cond = parse_expr(); int em = current_emit();
+        if (sp >= MAX_STACK) kit_error(fname, *lnum, "Stack overflow");
+        stack[sp++] = (Frame){em, cond, em && cond};
         return;
     }
     if (!strncmp(s, "@elif", 5)) {
-        if (sp > 0) { Frame *f = &stack[sp-1]; char *o = strchr(s, '('), *c = strrchr(s, ')');
-            if (o && c) { *c = 0; expr_p = o + 1; int cond = parse_expr();
-                if (f->branch_taken) f->this_emit = 0;
-                else { f->this_emit = f->parent_emit && cond; if (cond) f->branch_taken = 1; } } }
+        if (sp == 0) kit_error(fname, *lnum, "@elif without @if");
+        Frame *f = &stack[sp-1]; char *o = strchr(s, '('), *c = strrchr(s, ')');
+        if (!o || !c) kit_error(fname, *lnum, "Malformed @elif condition");
+        *c = 0; expr_p = o + 1; int cond = parse_expr();
+        if (f->branch_taken) f->this_emit = 0;
+        else { f->this_emit = f->parent_emit && cond; if (cond) f->branch_taken = 1; }
         return;
     }
-    if (!strncmp(s, "@else", 5)) { if (sp > 0) { Frame *f = &stack[sp-1]; f->this_emit = (!f->branch_taken && f->parent_emit); f->branch_taken = 1; } return; }
-    if (!strncmp(s, "@endif", 6)) { if (sp > 0) sp--; return; }
-    if (!strncmp(s, "@macro", 6)) { handle_macro_def(s, in); return; }
-    if (!strncmp(s, "@for", 4)) { handle_for(line, in); return; }
+    if (!strncmp(s, "@else", 5)) {
+        if (sp == 0) kit_error(fname, *lnum, "@else without @if");
+        Frame *f = &stack[sp-1]; f->this_emit = (!f->branch_taken && f->parent_emit); f->branch_taken = 1;
+        return;
+    }
+    if (!strncmp(s, "@endif", 6)) { if (sp > 0) sp--; else kit_error(fname, *lnum, "@endif without @if"); return; }
+    if (!strncmp(s, "@macro", 6)) { handle_macro_def(s, in, fname, lnum); return; }
+    if (!strncmp(s, "@for", 4)) { handle_for(line, in, fname, lnum); return; }
 
     for (int i = 0; i < macro_count; i++) {
         if (!strncmp(s, macros[i].name, strlen(macros[i].name)) && current_emit()) {
-            handle_macro_call(&macros[i], s); return;
+            handle_macro_call(&macros[i], s, fname, *lnum); return;
         }
     }
     if (current_emit()) substitute_and_print(line);
@@ -354,17 +369,22 @@ int main(int argc, char **argv) {
             if (inc_path_count < MAX_INC_PATHS) inc_paths[inc_path_count++] = argv[i] + 2;
         } else if (!strcmp(argv[i], "-m")) {
             minify = 1;
+        } else if (!strcmp(argv[i], "--trace")) {
+            trace = 1;
         } else {
             char *eq = strchr(argv[i], '=');
             if (eq) {
-                *eq = 0;
-                char *val = eq + 1;
+                *eq = 0; char *val = eq + 1;
                 if (is_numeric(val)) set_symbol_int(argv[i], atoi(val), 1);
                 else set_symbol_str(argv[i], val, 1);
             }
         }
     }
-    char line[4096];
-    while (fgets(line, sizeof(line), stdin)) process_line(line, stdin);
+    char line[4096]; int lnum = 0;
+    while (fgets(line, sizeof(line), stdin)) {
+        lnum++;
+        process_line(line, stdin, "stdin", &lnum);
+    }
+    if (sp != 0) kit_error("stdin", lnum, "Unterminated @if block (missing @endif)");
     return 0;
 }
