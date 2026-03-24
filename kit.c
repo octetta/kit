@@ -273,8 +273,12 @@ void handle_for(char *line, FILE *in) {
     char *eq = strchr(line, '=');
     char *dot = strstr(line, "..");
     if (!eq || !dot) return;
-    int vlen = eq - (ltrim(line) + 4);
-    strncpy(var, ltrim(line) + 4, vlen); var[vlen] = 0; trim(var);
+    
+    *eq = 0;
+    *dot = 0;
+
+    char *v_start = ltrim(line + 4);
+    strncpy(var, v_start, 63); var[63] = 0; trim(var);
     int start = get_symbol_int(ltrim(eq + 1)), end = get_symbol_int(ltrim(dot + 2));
 
     char *body[MAX_BLOCK_LINES]; int count = 0, depth = 1;
