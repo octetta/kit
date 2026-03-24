@@ -1,10 +1,11 @@
-<img src="kit.png" width="200">
+<img src="kit.png" width="400">
 
-# kit — Minimal C-friendly Preprocessor
+# `kit` a minimal C-friendly Preprocessor
 
-A tiny, dependency-free text preprocessor for C-like code.
+keep-it-tiny : a dependency-free text preprocessor for C-like code.
 
 Designed for:
+
 - clean syntax (no `#ifdef`)
 - simple conditional compilation
 - loop unrolling
@@ -19,8 +20,8 @@ Designed for:
 - `@define` (int + string)
 - `@include`
 - `@macro`
-- `--trace` debug mode
-- file + line error reporting
+- `--trace` debug mode (future)
+- file + line error reporting (future)
 
 ---
 
