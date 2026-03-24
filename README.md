@@ -1,4 +1,4 @@
-<img src="kit.png" width="400">
+<img src="kit-64.png" width="400">
 
 # `kit` a minimal C-friendly Preprocessor
 
