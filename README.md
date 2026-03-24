@@ -1,3 +1,5 @@
+<img src="kit.png" width="200">
+
 # kit — Minimal C-friendly Preprocessor
 
 A tiny, dependency-free text preprocessor for C-like code.
