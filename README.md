@@ -6,6 +6,7 @@ keep-it-tiny : a dependency-free text preprocessor for C-like code (not WS-frien
 
 Designed for:
 
+- generating conditional code variants without unneeded code
 - clean syntax (no `#ifdef`)
 - simple conditional compilation
 - loop unrolling
