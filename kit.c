@@ -7,9 +7,18 @@
 #define MAX_SYMBOLS 512
 #define MAX_MACROS 64
 #define MAX_BLOCK_LINES 1024
+#define MAX_INC_PATHS 16
 
 typedef struct { int parent_emit, branch_taken, this_emit; } Frame;
-typedef struct { char name[64]; int val, is_const; } Symbol;
+
+typedef struct {
+    char name[64];
+    int is_string;
+    int int_val;
+    char str_val[256];
+    int is_const;
+} Symbol;
+
 typedef struct {
     char name[64];
     char params[8][32];
@@ -24,6 +33,8 @@ Symbol symbols[MAX_SYMBOLS];
 int sym_count = 0;
 Macro macros[MAX_MACROS];
 int macro_count = 0;
+char *inc_paths[MAX_INC_PATHS];
+int inc_path_count = 0;
 int minify = 0;
 
 /* --- Utilities --- */
@@ -40,32 +51,66 @@ char* ltrim(char *s) {
 
 int current_emit() { return sp == 0 ? 1 : stack[sp-1].this_emit; }
 
-void set_symbol(const char *name, int val, int is_const) {
+int is_numeric(const char *s) {
+    if (*s == '-') s++;
+    if (!*s) return 0;
+    while (*s) { if (!isdigit((unsigned char)*s)) return 0; s++; }
+    return 1;
+}
+
+Symbol* get_symbol_struct(const char *name) {
     if (*name == '@') name++;
     for(int i=0; i<sym_count; i++) {
-        if(!strcmp(symbols[i].name, name)) {
-            if (!symbols[i].is_const || is_const) {
-                symbols[i].val = val;
-                if (is_const) symbols[i].is_const = 1;
-            }
-            return;
+        if(!strcmp(symbols[i].name, name)) return &symbols[i];
+    }
+    return NULL;
+}
+
+void set_symbol_int(const char *name, int val, int is_const) {
+    if (*name == '@') name++;
+    Symbol *s = get_symbol_struct(name);
+    if (s) {
+        if (!s->is_const || is_const) {
+            s->is_string = 0;
+            s->int_val = val;
+            if (is_const) s->is_const = 1;
         }
+        return;
     }
     if (sym_count < MAX_SYMBOLS) {
         strncpy(symbols[sym_count].name, name, 63);
-        symbols[sym_count].val = val;
+        symbols[sym_count].is_string = 0;
+        symbols[sym_count].int_val = val;
         symbols[sym_count].is_const = is_const;
         sym_count++;
     }
 }
 
-int get_symbol(const char *name) {
+void set_symbol_str(const char *name, const char *val, int is_const) {
     if (*name == '@') name++;
-    if (isdigit(*name) || (*name == '-' && isdigit(name[1]))) return atoi(name);
-    for(int i=0; i<sym_count; i++) {
-        if(!strcmp(symbols[i].name, name)) return symbols[i].val;
+    Symbol *s = get_symbol_struct(name);
+    if (s) {
+        if (!s->is_const || is_const) {
+            s->is_string = 1;
+            strncpy(s->str_val, val, 255);
+            if (is_const) s->is_const = 1;
+        }
+        return;
     }
-    return 0;
+    if (sym_count < MAX_SYMBOLS) {
+        strncpy(symbols[sym_count].name, name, 63);
+        symbols[sym_count].is_string = 1;
+        strncpy(symbols[sym_count].str_val, val, 255);
+        symbols[sym_count].is_const = is_const;
+        sym_count++;
+    }
+}
+
+int get_symbol_int(const char *name) {
+    if (*name == '@') name++;
+    if (is_numeric(name)) return atoi(name);
+    Symbol *s = get_symbol_struct(name);
+    return s ? s->int_val : 0;
 }
 
 /* --- Expression Parser --- */
@@ -85,7 +130,7 @@ int parse_primary() {
     if (*expr_p == '@') expr_p++; 
     while (isalnum((unsigned char)*expr_p) || *expr_p == '_') buf[i++] = *expr_p++;
     buf[i] = 0;
-    return (i == 0) ? 0 : get_symbol(buf);
+    return (i == 0) ? 0 : get_symbol_int(buf);
 }
 
 int parse_eq() {
@@ -124,8 +169,17 @@ void substitute_and_print(const char *line) {
             q++; char name[64]; int i = 0;
             while (isalnum((unsigned char)*q) || *q == '_') name[i++] = *q++;
             name[i] = 0;
-            if (i > 0) printf("%d", get_symbol(name));
-            else putchar('@');
+            if (i > 0) {
+                Symbol *s = get_symbol_struct(name);
+                if (s) {
+                    if (s->is_string) printf("%s", s->str_val);
+                    else printf("%d", s->int_val);
+                } else {
+                    printf("@%s", name);
+                }
+            } else {
+                putchar('@');
+            }
         } else putchar(*q++);
     }
     putchar('\n');
@@ -134,18 +188,36 @@ void substitute_and_print(const char *line) {
 void process_line(char *line, FILE *in);
 
 /* --- Directive Handlers --- */
+void handle_include(char *line) {
+    char inc_file[256];
+    if (sscanf(line, "@include \"%255[^\"]\"", inc_file) != 1) return;
+    
+    FILE *f = fopen(inc_file, "r");
+    for (int i = 0; !f && i < inc_path_count; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", inc_paths[i], inc_file);
+        f = fopen(path, "r");
+    }
+    
+    if (f) {
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), f)) process_line(buf, f);
+        fclose(f);
+    } else {
+        fprintf(stderr, "Error: Could not find include file '%s'\n", inc_file);
+    }
+}
+
 void handle_macro_def(char *line, FILE *in) {
     if (macro_count >= MAX_MACROS) return;
     Macro *m = &macros[macro_count++];
     char *open = strchr(line, '('), *close = strchr(line, ')');
     if (!open || !close) return;
 
-    // Name
     int name_len = open - (line + 7);
     strncpy(m->name, ltrim(line + 7), name_len);
     m->name[name_len] = 0; trim(m->name);
 
-    // Params
     char pbuf[128]; strncpy(pbuf, open + 1, close - open - 1); pbuf[close - open - 1] = 0;
     char *tok = strtok(pbuf, ", ");
     while (tok && m->param_count < 8) {
@@ -153,7 +225,6 @@ void handle_macro_def(char *line, FILE *in) {
         tok = strtok(NULL, ", ");
     }
 
-    // Body
     char buf[4096];
     while (fgets(buf, sizeof(buf), in)) {
         if (strstr(buf, "@endmacro")) break;
@@ -171,7 +242,7 @@ void handle_macro_call(Macro *m, char *line) {
     while (tok && arg_count < 8) {
         strcpy(args[arg_count++], ltrim(tok));
         trim(args[arg_count-1]);
-        if (args[arg_count-1][0] == '"') { // Strip quotes if present
+        if (args[arg_count-1][0] == '"') {
             int len = strlen(args[arg_count-1]);
             if (args[arg_count-1][len-1] == '"') {
                 args[arg_count-1][len-1] = 0;
@@ -204,7 +275,7 @@ void handle_for(char *line, FILE *in) {
     if (!eq || !dot) return;
     int vlen = eq - (ltrim(line) + 4);
     strncpy(var, ltrim(line) + 4, vlen); var[vlen] = 0; trim(var);
-    int start = get_symbol(ltrim(eq + 1)), end = get_symbol(ltrim(dot + 2));
+    int start = get_symbol_int(ltrim(eq + 1)), end = get_symbol_int(ltrim(dot + 2));
 
     char *body[MAX_BLOCK_LINES]; int count = 0, depth = 1;
     char buf[4096];
@@ -215,7 +286,7 @@ void handle_for(char *line, FILE *in) {
     }
     if (current_emit()) {
         for (int i = start; i <= end; i++) {
-            set_symbol(var, i, 0);
+            set_symbol_int(var, i, 0);
             for (int j = 0; j < count; j++) {
                 char tmp[4096]; strcpy(tmp, body[j]);
                 process_line(tmp, in);
@@ -226,13 +297,27 @@ void handle_for(char *line, FILE *in) {
 }
 
 void process_line(char *line, FILE *in) {
+    char original[4096];
+    strcpy(original, line);
+    char *e = line + strlen(line) - 1;
+    while(e >= line && (*e == '\n' || *e == '\r')) *e-- = '\0';
     char *s = ltrim(line);
+
     if (!*s) { if (current_emit() && !minify) putchar('\n'); return; }
+
     if (!strncmp(s, "@define", 7)) {
-        char n[64], v[64];
-        if (sscanf(s, "@define %s %s", n, v) == 2) set_symbol(n, get_symbol(v), 0);
+        char n[64], str_v[256];
+        if (sscanf(s, "@define %63s \"%255[^\"]\"", n, str_v) == 2) {
+            set_symbol_str(n, str_v, 0);
+        } else {
+            char v[64];
+            if (sscanf(s, "@define %63s %63s", n, v) == 2) {
+                set_symbol_int(n, get_symbol_int(v), 0);
+            }
+        }
         return;
     }
+    if (!strncmp(s, "@include", 8)) { handle_include(s); return; }
     if (!strncmp(s, "@if", 3)) {
         char *o = strchr(s, '('), *c = strrchr(s, ')');
         if (o && c) { *c = 0; expr_p = o + 1; int cond = parse_expr(); int em = current_emit();
@@ -261,8 +346,19 @@ void process_line(char *line, FILE *in) {
 
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
-        char *eq = strchr(argv[i], '=');
-        if (eq) { *eq = 0; set_symbol(argv[i], atoi(eq+1), 1); }
+        if (!strncmp(argv[i], "-I", 2)) {
+            if (inc_path_count < MAX_INC_PATHS) inc_paths[inc_path_count++] = argv[i] + 2;
+        } else if (!strcmp(argv[i], "-m")) {
+            minify = 1;
+        } else {
+            char *eq = strchr(argv[i], '=');
+            if (eq) {
+                *eq = 0;
+                char *val = eq + 1;
+                if (is_numeric(val)) set_symbol_int(argv[i], atoi(val), 1);
+                else set_symbol_str(argv[i], val, 1);
+            }
+        }
     }
     char line[4096];
     while (fgets(line, sizeof(line), stdin)) process_line(line, stdin);
