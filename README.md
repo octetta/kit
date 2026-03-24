@@ -2,7 +2,7 @@
 
 # `kit` is a minimal C-friendly preprocessor
 
-keep-it-tiny : a dependency-free text preprocessor for C-like code (not WS-friendly).
+keep-it-tiny : a dependency-free text preprocessor for C-like code (not white-space-friendly, so good luck with Python or `Makefiles`).
 
 Designed for:
 
