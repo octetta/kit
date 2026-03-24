@@ -22,7 +22,6 @@ Designed for:
 - `@include`
 - `@macro`
 - `--trace` debug mode
-- file + line error reporting (future)
 
 ---
 
@@ -54,19 +53,6 @@ make
 
 ```
 ./kit ENV=1 DEBUG=0 < input.kit > output.c
-```
-
-With include paths:
-
-```
-./kit -Iincludes ENV=1 < input.kit > output.c
-```
-
-Debug mode:
-
-```
-out.c: input.kit kit
-  ./kit ENV=1 < $< > $@
 ```
 
 ## Makefile Integration
