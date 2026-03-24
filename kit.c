@@ -5,31 +5,32 @@
 
 #define MAX_STACK 64
 #define MAX_SYMBOLS 512
-#define MAX_BLOCK_LINES 2048
+#define MAX_MACROS 64
+#define MAX_BLOCK_LINES 1024
 
-typedef struct {
-    int parent_emit;
-    int branch_taken;
-    int this_emit;
-} Frame;
-
+typedef struct { int parent_emit, branch_taken, this_emit; } Frame;
+typedef struct { char name[64]; int val, is_const; } Symbol;
 typedef struct {
     char name[64];
-    int val;
-    int is_const; // Set by CLI, cannot be overwritten by @define
-} Symbol;
+    char params[8][32];
+    int param_count;
+    char *body[MAX_BLOCK_LINES];
+    int line_count;
+} Macro;
 
 Frame stack[MAX_STACK];
 int sp = 0;
 Symbol symbols[MAX_SYMBOLS];
 int sym_count = 0;
+Macro macros[MAX_MACROS];
+int macro_count = 0;
 int minify = 0;
 
 /* --- Utilities --- */
-void trim_trailing(char *s) {
+void trim(char *s) {
     if (!s) return;
     char *e = s + strlen(s) - 1;
-    while(e >= s && (*e == '\n' || *e == '\r' || isspace((unsigned char)*e))) *e-- = '\0';
+    while(e >= s && isspace((unsigned char)*e)) *e-- = '\0';
 }
 
 char* ltrim(char *s) { 
@@ -115,7 +116,7 @@ int parse_expr() {
     return v;
 }
 
-/* --- Core Logic --- */
+/* --- Substitution Engine --- */
 void substitute_and_print(const char *line) {
     const char *q = line;
     while (*q) {
@@ -132,112 +133,136 @@ void substitute_and_print(const char *line) {
 
 void process_line(char *line, FILE *in);
 
+/* --- Directive Handlers --- */
+void handle_macro_def(char *line, FILE *in) {
+    if (macro_count >= MAX_MACROS) return;
+    Macro *m = &macros[macro_count++];
+    char *open = strchr(line, '('), *close = strchr(line, ')');
+    if (!open || !close) return;
+
+    // Name
+    int name_len = open - (line + 7);
+    strncpy(m->name, ltrim(line + 7), name_len);
+    m->name[name_len] = 0; trim(m->name);
+
+    // Params
+    char pbuf[128]; strncpy(pbuf, open + 1, close - open - 1); pbuf[close - open - 1] = 0;
+    char *tok = strtok(pbuf, ", ");
+    while (tok && m->param_count < 8) {
+        strcpy(m->params[m->param_count++], tok);
+        tok = strtok(NULL, ", ");
+    }
+
+    // Body
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), in)) {
+        if (strstr(buf, "@endmacro")) break;
+        m->body[m->line_count++] = strdup(buf);
+    }
+}
+
+void handle_macro_call(Macro *m, char *line) {
+    char *open = strchr(line, '('), *close = strrchr(line, ')');
+    if (!open || !close) return;
+    char args[8][128]; int arg_count = 0;
+    char abuf[512]; strncpy(abuf, open + 1, close - open - 1); abuf[close - open - 1] = 0;
+    
+    char *tok = strtok(abuf, ",");
+    while (tok && arg_count < 8) {
+        strcpy(args[arg_count++], ltrim(tok));
+        trim(args[arg_count-1]);
+        if (args[arg_count-1][0] == '"') { // Strip quotes if present
+            int len = strlen(args[arg_count-1]);
+            if (args[arg_count-1][len-1] == '"') {
+                args[arg_count-1][len-1] = 0;
+                memmove(args[arg_count-1], args[arg_count-1]+1, len);
+            }
+        }
+        tok = strtok(NULL, ",");
+    }
+
+    for (int i = 0; i < m->line_count; i++) {
+        char expanded[4096]; strcpy(expanded, m->body[i]);
+        for (int a = 0; a < arg_count; a++) {
+            char target[64], *pos;
+            sprintf(target, "@%s", m->params[a]);
+            while ((pos = strstr(expanded, target))) {
+                char tmp[4096]; int offset = pos - expanded;
+                strncpy(tmp, expanded, offset);
+                sprintf(tmp + offset, "%s%s", args[a], pos + strlen(target));
+                strcpy(expanded, tmp);
+            }
+        }
+        process_line(expanded, NULL);
+    }
+}
+
 void handle_for(char *line, FILE *in) {
-    char var[64], range_start_s[64], range_end_s[64];
-    // Supports @for i=0..N or @for i=0..5
+    char var[64];
     char *eq = strchr(line, '=');
     char *dot = strstr(line, "..");
     if (!eq || !dot) return;
+    int vlen = eq - (ltrim(line) + 4);
+    strncpy(var, ltrim(line) + 4, vlen); var[vlen] = 0; trim(var);
+    int start = get_symbol(ltrim(eq + 1)), end = get_symbol(ltrim(dot + 2));
 
-    // Extract variable name
-    char *v_start = ltrim(line + 4); 
-    int v_len = eq - v_start;
-    strncpy(var, v_start, v_len); var[v_len] = 0;
-    char *trimmed_var = strtok(var, " \t");
-
-    // Extract start and end
-    *dot = 0;
-    int start = get_symbol(ltrim(eq + 1));
-    int end = get_symbol(ltrim(dot + 2));
-
-    // Buffer the loop body
-    char *body[MAX_BLOCK_LINES];
-    int count = 0;
+    char *body[MAX_BLOCK_LINES]; int count = 0, depth = 1;
     char buf[4096];
-    int depth = 1;
     while (fgets(buf, sizeof(buf), in)) {
         if (strstr(buf, "@for")) depth++;
-        if (strstr(buf, "@endfor")) {
-            depth--;
-            if (depth == 0) break;
-        }
-        if (count < MAX_BLOCK_LINES) body[count++] = strdup(buf);
+        if (strstr(buf, "@endfor") && --depth == 0) break;
+        body[count++] = strdup(buf);
     }
-
     if (current_emit()) {
         for (int i = start; i <= end; i++) {
-            set_symbol(trimmed_var, i, 0); // Loop vars are not const
+            set_symbol(var, i, 0);
             for (int j = 0; j < count; j++) {
-                char temp[4096];
-                strcpy(temp, body[j]);
-                process_line(temp, in);
+                char tmp[4096]; strcpy(tmp, body[j]);
+                process_line(tmp, in);
             }
         }
     }
-
     for (int j = 0; j < count; j++) free(body[j]);
 }
 
 void process_line(char *line, FILE *in) {
-    char original[4096];
-    strcpy(original, line);
-    trim_trailing(line);
     char *s = ltrim(line);
-
-    if (!*s) { 
-        if (current_emit() && !minify) putchar('\n'); 
-        return; 
-    }
-
+    if (!*s) { if (current_emit() && !minify) putchar('\n'); return; }
     if (!strncmp(s, "@define", 7)) {
         char n[64], v[64];
         if (sscanf(s, "@define %s %s", n, v) == 2) set_symbol(n, get_symbol(v), 0);
         return;
     }
     if (!strncmp(s, "@if", 3)) {
-        char *open = strchr(s, '('), *close = strrchr(s, ')');
-        if (open && close) {
-            *close = 0; expr_p = open + 1;
-            int cond = parse_expr();
-            int can_emit = current_emit();
-            stack[sp++] = (Frame){can_emit, cond, can_emit && cond};
-        }
+        char *o = strchr(s, '('), *c = strrchr(s, ')');
+        if (o && c) { *c = 0; expr_p = o + 1; int cond = parse_expr(); int em = current_emit();
+            stack[sp++] = (Frame){em, cond, em && cond}; }
         return;
     }
     if (!strncmp(s, "@elif", 5)) {
-        if (sp > 0) {
-            Frame *f = &stack[sp-1];
-            char *open = strchr(s, '('), *close = strrchr(s, ')');
-            if (open && close) {
-                *close = 0; expr_p = open + 1;
-                int cond = parse_expr();
+        if (sp > 0) { Frame *f = &stack[sp-1]; char *o = strchr(s, '('), *c = strrchr(s, ')');
+            if (o && c) { *c = 0; expr_p = o + 1; int cond = parse_expr();
                 if (f->branch_taken) f->this_emit = 0;
-                else { f->this_emit = f->parent_emit && cond; if (cond) f->branch_taken = 1; }
-            }
-        }
+                else { f->this_emit = f->parent_emit && cond; if (cond) f->branch_taken = 1; } } }
         return;
     }
-    if (!strncmp(s, "@else", 5)) {
-        if (sp > 0) {
-            Frame *f = &stack[sp-1];
-            f->this_emit = (!f->branch_taken && f->parent_emit);
-            f->branch_taken = 1;
-        }
-        return;
-    }
+    if (!strncmp(s, "@else", 5)) { if (sp > 0) { Frame *f = &stack[sp-1]; f->this_emit = (!f->branch_taken && f->parent_emit); f->branch_taken = 1; } return; }
     if (!strncmp(s, "@endif", 6)) { if (sp > 0) sp--; return; }
+    if (!strncmp(s, "@macro", 6)) { handle_macro_def(s, in); return; }
     if (!strncmp(s, "@for", 4)) { handle_for(line, in); return; }
 
+    for (int i = 0; i < macro_count; i++) {
+        if (!strncmp(s, macros[i].name, strlen(macros[i].name)) && current_emit()) {
+            handle_macro_call(&macros[i], s); return;
+        }
+    }
     if (current_emit()) substitute_and_print(line);
 }
 
 int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         char *eq = strchr(argv[i], '=');
-        if (eq) {
-            *eq = 0;
-            set_symbol(argv[i], atoi(eq+1), 1);
-        }
+        if (eq) { *eq = 0; set_symbol(argv[i], atoi(eq+1), 1); }
     }
     char line[4096];
     while (fgets(line, sizeof(line), stdin)) process_line(line, stdin);
