@@ -1,8 +1,8 @@
 <img src="kit-64.png" width="400">
 
-# `kit` a minimal C-friendly Preprocessor
+# `kit` is a minimal C-friendly preprocessor
 
-keep-it-tiny : a dependency-free text preprocessor for C-like code.
+keep-it-tiny : a dependency-free text preprocessor for C-like code (not WS-friendly).
 
 Designed for:
 
