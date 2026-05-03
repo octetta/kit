@@ -1,3 +1,27 @@
+#define KPRE_CHR '@'
+#define KPRE_STR "@"
+#define KDEFINE     KPRE_STR   "define"
+#define KDEFINE_SZ  (sizeof(KDEFINE)-1)
+#define KINCLUDE    KPRE_STR "include"
+#define KINCLUDE_SZ (sizeof(KINCLUDE)-1)
+#define KENDMACRO   KPRE_STR "endmacro"
+#define KFOR        KPRE_STR "for"
+#define KFOR_SZ     (sizeof(KFOR)-1)
+#define KENDFOR     KPRE_STR "endfor"
+#define KIF         KPRE_STR "if"
+#define KIF_SZ      (sizeof(KIF)-1)
+#define KELIF       KPRE_STR "elif"
+#define KELIF_SZ    (sizeof(KELIF)-1)
+#define KELSE       KPRE_STR "else"
+#define KELSE_SZ    (sizeof(KELIF)-1)
+#define KENDIF      KPRE_STR "endif"
+#define KENDIF_SZ   (sizeof(KENDIF)-1)
+#define KMACRO      KPRE_STR "macro"
+#define KMACRO_SZ   (sizeof(KMACRO)-1)
+#define KDOC        KPRE_STR "doc"
+#define KENDDOC     KPRE_STR "enddoc"
+//
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -69,7 +93,7 @@ int is_numeric(const char *s) {
 }
 
 Symbol* get_symbol_struct(const char *name) {
-    if (*name == '@') name++;
+    if (*name == KPRE_CHR) name++;
     for(int i=0; i<sym_count; i++) {
         if(!strcmp(symbols[i].name, name)) return &symbols[i];
     }
@@ -77,7 +101,7 @@ Symbol* get_symbol_struct(const char *name) {
 }
 
 void set_symbol_int(const char *name, int val, int is_const) {
-    if (*name == '@') name++;
+    if (*name == KPRE_CHR) name++;
     Symbol *s = get_symbol_struct(name);
     if (s) {
         if (!s->is_const || is_const) {
@@ -97,7 +121,7 @@ void set_symbol_int(const char *name, int val, int is_const) {
 }
 
 void set_symbol_str(const char *name, const char *val, int is_const) {
-    if (*name == '@') name++;
+    if (*name == KPRE_CHR) name++;
     Symbol *s = get_symbol_struct(name);
     if (s) {
         if (!s->is_const || is_const) {
@@ -117,7 +141,7 @@ void set_symbol_str(const char *name, const char *val, int is_const) {
 }
 
 int get_symbol_int(const char *name) {
-    if (*name == '@') name++;
+    if (*name == KPRE_CHR) name++;
     if (is_numeric(name)) return atoi(name);
     Symbol *s = get_symbol_struct(name);
     return s ? s->int_val : 0;
@@ -137,7 +161,7 @@ int parse_primary() {
     }
     if (*expr_p == '!') { expr_p++; return !parse_primary(); }
     char buf[64]; int i = 0;
-    if (*expr_p == '@') expr_p++; 
+    if (*expr_p == KPRE_CHR) expr_p++; 
     while (isalnum((unsigned char)*expr_p) || *expr_p == '_') buf[i++] = *expr_p++;
     buf[i] = 0;
     return (i == 0) ? 0 : get_symbol_int(buf);
@@ -175,7 +199,7 @@ int parse_expr() {
 void substitute_and_print(const char *line) {
     const char *q = line;
     while (*q) {
-        if (*q == '@') {
+        if (*q == KPRE_CHR) {
             q++; char name[64]; int i = 0;
             while (isalnum((unsigned char)*q) || *q == '_') name[i++] = *q++;
             name[i] = 0;
@@ -185,9 +209,9 @@ void substitute_and_print(const char *line) {
                     if (s->is_string) printf("%s", s->str_val);
                     else printf("%d", s->int_val);
                 } else {
-                    printf("@%s", name);
+                    printf(KPRE_STR "%s", name);
                 }
-            } else { putchar('@'); }
+            } else { putchar(KPRE_CHR); }
         } else putchar(*q++);
     }
     putchar('\n');
@@ -198,7 +222,7 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum);
 /* --- Directive Handlers --- */
 void handle_include(char *line, const char *curr_file, int curr_line) {
     char inc_file[256];
-    if (sscanf(line, "@include \"%255[^\"]\"", inc_file) != 1) return;
+    if (sscanf(line, KINCLUDE " \"%255[^\"]\"", inc_file) != 1) return;
     
     FILE *f = fopen(inc_file, "r");
     for (int i = 0; !f && i < inc_path_count; i++) {
@@ -239,7 +263,7 @@ void handle_macro_def(char *line, FILE *in, const char *fname, int *lnum) {
     char buf[4096];
     while (fgets(buf, sizeof(buf), in)) {
         (*lnum)++;
-        if (strstr(buf, "@endmacro")) break;
+        if (strstr(buf, KENDMACRO)) break;
         m->body[m->line_count++] = strdup(buf);
     }
 }
@@ -271,7 +295,7 @@ void handle_macro_call(Macro *m, char *line, const char *fname, int lnum) {
         char expanded[4096]; strcpy(expanded, m->body[i]);
         for (int a = 0; a < arg_count; a++) {
             char target[64], *pos;
-            sprintf(target, "@%s", m->params[a]);
+            sprintf(target, KPRE_STR "%s", m->params[a]);
             while ((pos = strstr(expanded, target))) {
                 char tmp[4096]; int offset = pos - expanded;
                 strncpy(tmp, expanded, offset);
@@ -287,7 +311,7 @@ void handle_macro_call(Macro *m, char *line, const char *fname, int lnum) {
 void handle_for(char *line, FILE *in, const char *fname, int *lnum) {
     char var[64], line_copy[4096]; strcpy(line_copy, line);
     char *eq = strchr(line_copy, '='), *dot = strstr(line_copy, "..");
-    if (!eq || !dot) kit_error(fname, *lnum, "Malformed @for loop");
+    if (!eq || !dot) kit_error(fname, *lnum, "Malformed " KFOR " loop");
     
     *eq = 0; *dot = 0;
     char *v_start = ltrim(line_copy + 4);
@@ -298,8 +322,8 @@ void handle_for(char *line, FILE *in, const char *fname, int *lnum) {
     char buf[4096];
     while (fgets(buf, sizeof(buf), in)) {
         (*lnum)++;
-        if (strstr(buf, "@for")) depth++;
-        if (strstr(buf, "@endfor") && --depth == 0) break;
+        if (strstr(buf, KFOR)) depth++;
+        if (strstr(buf, KENDFOR) && --depth == 0) break;
         body[count++] = strdup(buf);
     }
     if (current_emit()) {
@@ -320,23 +344,23 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum) {
     while(e >= line && (*e == '\n' || *e == '\r')) *e-- = '\0';
     char *s = ltrim(line);
 
-    if (trace && *s == '@') fprintf(stderr, "trace: %s:%d: %s\n", fname, *lnum, s);
+    if (trace && *s == KPRE_CHR) fprintf(stderr, "trace: %s:%d: %s\n", fname, *lnum, s);
 
     if (!*s) { if (current_emit() && !minify) putchar('\n'); return; }
 
-    if (!strncmp(s, "@define", 7)) {
+    if (!strncmp(s, KDEFINE, KDEFINE_SZ)) {
         char n[64], str_v[256];
-        if (sscanf(s, "@define %63s \"%255[^\"]\"", n, str_v) == 2) set_symbol_str(n, str_v, 0);
+        if (sscanf(s, KDEFINE " %63s \"%255[^\"]\"", n, str_v) == 2) set_symbol_str(n, str_v, 0);
         else {
             char v[64];
-            if (sscanf(s, "@define %63s %63s", n, v) == 2) set_symbol_int(n, get_symbol_int(v), 0);
+            if (sscanf(s, KDEFINE " %63s %63s", n, v) == 2) set_symbol_int(n, get_symbol_int(v), 0);
         }
         return;
     }
-    if (!strncmp(s, "@include", 8)) { handle_include(s, fname, *lnum); return; }
-    if (!strncmp(s, "@if", 3)) {
+    if (!strncmp(s, KINCLUDE, KINCLUDE_SZ)) { handle_include(s, fname, *lnum); return; }
+    if (!strncmp(s, KIF, KIF_SZ)) {
         char *o = strchr(s, '('), *c = strrchr(s, ')');
-        if (!o || !c) kit_error(fname, *lnum, "Malformed @if condition");
+        if (!o || !c) kit_error(fname, *lnum, "Malformed " KIF " condition");
         *c = 0; expr_p = o + 1;
         int cond = parse_expr();
         int em = current_emit();
@@ -344,25 +368,25 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum) {
         stack[sp++] = (Frame){em, cond, em && cond};
         return;
     }
-    if (!strncmp(s, "@elif", 5)) {
-        if (sp == 0) kit_error(fname, *lnum, "@elif without @if");
+    if (!strncmp(s, KELIF, KELIF_SZ)) {
+        if (sp == 0) kit_error(fname, *lnum, KELIF " without " KIF);
         Frame *f = &stack[sp-1]; char *o = strchr(s, '('), *c = strrchr(s, ')');
-        if (!o || !c) kit_error(fname, *lnum, "Malformed @elif condition");
+        if (!o || !c) kit_error(fname, *lnum, "Malformed " KELIF " condition");
         *c = 0; expr_p = o + 1; int cond = parse_expr();
         if (f->branch_taken) f->this_emit = 0;
         else { f->this_emit = f->parent_emit && cond; if (cond) f->branch_taken = 1; }
         return;
     }
-    if (!strncmp(s, "@else", 5)) {
-        if (sp == 0) kit_error(fname, *lnum, "@else without @if");
+    if (!strncmp(s, KELSE, KELSE_SZ)) {
+        if (sp == 0) kit_error(fname, *lnum, KELSE " without " KIF);
         Frame *f = &stack[sp-1]; f->this_emit = (!f->branch_taken && f->parent_emit); f->branch_taken = 1;
         return;
     }
-    if (!strncmp(s, "@endif", 6)) {
-      if (sp > 0) sp--; else kit_error(fname, *lnum, "@endif without @if"); return;
+    if (!strncmp(s, KENDIF, KENDIF_SZ)) {
+      if (sp > 0) sp--; else kit_error(fname, *lnum, KENDIF " without " KIF); return;
     }
-    if (!strncmp(s, "@macro", 6)) { handle_macro_def(s, in, fname, lnum); return; }
-    if (!strncmp(s, "@for", 4)) { handle_for(line, in, fname, lnum); return; }
+    if (!strncmp(s, KMACRO, KMACRO_SZ)) { handle_macro_def(s, in, fname, lnum); return; }
+    if (!strncmp(s, KFOR, KFOR_SZ)) { handle_for(line, in, fname, lnum); return; }
 
     for (int i = 0; i < macro_count; i++) {
         if (!strncmp(s, macros[i].name, strlen(macros[i].name)) && current_emit()) {
@@ -377,6 +401,7 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum) {
 int main(int argc, char **argv) {
     const char *input_path = NULL;
     const char *output_path = NULL;
+    const char *doc_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "-I", 2)) {
@@ -397,6 +422,12 @@ int main(int argc, char **argv) {
                 return 1;
             }
             output_path = argv[++i];
+        } else if (!strcmp(argv[i], "--doc")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "missing argument for --doc\n");
+                return 1;
+            }
+            doc_path = argv[++i];
         } else {
             char *eq = strchr(argv[i], '=');
             if (eq) {
@@ -432,7 +463,7 @@ int main(int argc, char **argv) {
         lnum++;
         process_line(line, kit_in, kit_in_name, &lnum);
     }
-    if (sp != 0) kit_error(kit_in_name, lnum, "Unterminated @if block (missing @endif)");
+    if (sp != 0) kit_error(kit_in_name, lnum, "Unterminated " KIF " block (missing " KENDIF ")");
     if (kit_in != stdin) fclose(kit_in);
     return 0;
 }
