@@ -19,7 +19,9 @@
 #define KMACRO      KPRE_STR "macro"
 #define KMACRO_SZ   (sizeof(KMACRO)-1)
 #define KDOC        KPRE_STR "doc"
+#define KDOC_SZ     (sizeof(KDOC)-1)
 #define KENDDOC     KPRE_STR "enddoc"
+#define KENDDOC_SZ  (sizeof(KENDDOC)-1)
 //
 
 #include <stdio.h>
@@ -339,6 +341,19 @@ void handle_for(char *line, FILE *in, const char *fname, int *lnum) {
     for (int j = 0; j < count; j++) free(body[j]);
 }
 
+static int doc_enabled = 0;
+static char *doc_path = NULL;
+static FILE *doc_file = NULL;
+
+void handle_doc(char *line, FILE *in, const char *fname, int *lnum) {
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), in)) {
+        (*lnum)++;
+        if (strstr(buf, KENDDOC)) break;
+        if (doc_enabled && doc_file && current_emit()) fprintf(doc_file, "%s", buf);
+    }
+}
+
 void process_line(char *line, FILE *in, const char *fname, int *lnum) {
     char *e = line + strlen(line) - 1;
     while(e >= line && (*e == '\n' || *e == '\r')) *e-- = '\0';
@@ -387,6 +402,7 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum) {
     }
     if (!strncmp(s, KMACRO, KMACRO_SZ)) { handle_macro_def(s, in, fname, lnum); return; }
     if (!strncmp(s, KFOR, KFOR_SZ)) { handle_for(line, in, fname, lnum); return; }
+    if (!strncmp(s, KDOC, KDOC_SZ)) { handle_doc(line, in, fname, lnum); return; }
 
     for (int i = 0; i < macro_count; i++) {
         if (!strncmp(s, macros[i].name, strlen(macros[i].name)) && current_emit()) {
@@ -401,7 +417,6 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum) {
 int main(int argc, char **argv) {
     const char *input_path = NULL;
     const char *output_path = NULL;
-    const char *doc_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (!strncmp(argv[i], "-I", 2)) {
@@ -428,6 +443,12 @@ int main(int argc, char **argv) {
                 return 1;
             }
             doc_path = argv[++i];
+            doc_file = fopen(doc_path, "w");
+            if (doc_file == NULL) {
+              fprintf(stderr, "cannot open %s for --doc\n", doc_path);
+              return 1;
+            }
+            doc_enabled = 1;
         } else {
             char *eq = strchr(argv[i], '=');
             if (eq) {
@@ -465,5 +486,6 @@ int main(int argc, char **argv) {
     }
     if (sp != 0) kit_error(kit_in_name, lnum, "Unterminated " KIF " block (missing " KENDIF ")");
     if (kit_in != stdin) fclose(kit_in);
+    if (doc_file) fclose(doc_file);
     return 0;
 }

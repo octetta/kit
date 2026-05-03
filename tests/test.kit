@@ -5,3 +5,18 @@
     printf("@NAME index @i of @N\n");
 @endfor
 
+@if(ENV==1)
+    printf("ENV\n");
+@doc
+## ENV is enabled
+@enddoc
+
+@endif
+
+@doc
+# this is fantastic
+- this
+- is
+- a 
+- list
+@enddoc
