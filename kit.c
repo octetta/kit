@@ -23,6 +23,16 @@
 #define KENDDOC     KPRE_STR "enddoc"
 #define KENDDOC_SZ  (sizeof(KENDDOC)-1)
 //
+#define KKV         KPRE_STR "kv"
+#define KKV_SZ      (sizeof(KKV)-1)
+#define KENDKV      KPRE_STR "endkv"
+#define KENDKV_SZ   (sizeof(KENDKV)-1)
+//
+#define KACT         KPRE_STR "act"
+#define KACT_SZ     (sizeof(KACT)-1)
+#define KENDACT     KPRE_STR "endact"
+#define KENDACT_SZ  (sizeof(KENDACT)-1)
+//
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -354,6 +364,56 @@ void handle_doc(char *line, FILE *in, const char *fname, int *lnum) {
     }
 }
 
+/*
+this sequence
+
+@kv(tag,key)
+value
+@endkv
+
+makes
+
+#define KIT_KV_ID_%d  (current KV_ID counter)
+#define KIT_KV_TAG_%d (tag)
+#define KIT_KV_KEY_%d (key)
+#define KIT_KV_VAL_%d (values concat-ed into a string)
+
+then increments the KV_ID counter
+
+somewhere at the end of the source file an entry
+
+@act
+@endact
+
+can do something meaningful with what's been collected, although kit
+makes no promises about this being the last thing called, so if order
+is important, your code has to manage it, and there can be more than
+one act/endact blocks if that makes sense for your usage
+
+*/
+
+static int kv_id = 0;
+
+void handle_kv(char *line, FILE *in, const char *fname, int *lnum) {
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), in)) {
+        (*lnum)++;
+        if (strstr(buf, KENDKV)) break;
+    }
+    kv_id++;
+}
+
+void handle_act(char *line, FILE *in, const char *fname, int *lnum) {
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), in)) {
+        (*lnum)++;
+        if (strstr(buf, KENDACT)) break;
+        if (current_emit()) {
+          printf("%s\n", buf);
+        }
+    }
+}
+
 void process_line(char *line, FILE *in, const char *fname, int *lnum) {
     char *e = line + strlen(line) - 1;
     while(e >= line && (*e == '\n' || *e == '\r')) *e-- = '\0';
@@ -403,6 +463,8 @@ void process_line(char *line, FILE *in, const char *fname, int *lnum) {
     if (!strncmp(s, KMACRO, KMACRO_SZ)) { handle_macro_def(s, in, fname, lnum); return; }
     if (!strncmp(s, KFOR, KFOR_SZ)) { handle_for(line, in, fname, lnum); return; }
     if (!strncmp(s, KDOC, KDOC_SZ)) { handle_doc(line, in, fname, lnum); return; }
+    if (!strncmp(s, KKV, KKV_SZ)) { handle_kv(line, in, fname, lnum); return; }
+    if (!strncmp(s, KACT, KACT_SZ)) { handle_act(line, in, fname, lnum); return; }
 
     for (int i = 0; i < macro_count; i++) {
         if (!strncmp(s, macros[i].name, strlen(macros[i].name)) && current_emit()) {
